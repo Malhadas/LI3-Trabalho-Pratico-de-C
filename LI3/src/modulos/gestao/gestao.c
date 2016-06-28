@@ -1,0 +1,786 @@
+/*
+ * Gestão de filial: módulo de dados que, a partir dos ficheiros lidos, conterá as
+ * estruturas de dados adequadas à representação dos relacionamentos,
+ * fundamentais para a aplicação, entre produtos e clientes, ou seja, para cada
+ * produto, saber quais os clientes que o compraram, quantas unidades cada um
+ * comprou, em que mês e em que filial.
+ * Para a estruturação optimizada dos dados deste módulo de dados será crucial
+ * analisar as queries que a aplicação deverá implementar, tendo sempre em
+ * atenção que pretendemos ter o histórico de vendas organizado por filiais para
+ * uma melhor análise, não esquecendo que existem 3 filiais nesta cadeia. 
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "gestao.h"
+
+#define BUFFER_PEQUENO 100
+#define BUFFER_GRANDE  1000
+
+struct gestao {
+	int elementos;
+	int prods;
+	int num_clientes;
+	int num_clientes_compradores;
+	int num_compradores_todas_filiais;
+	Avl clientes[26];
+	Avl produtos[26];
+};
+
+typedef struct cliente {
+	Avl produtos[26];
+
+	char *cli;
+
+	int comprador_todas_filiais; /*1 se sim, 0 se não*/
+
+	int produtos_diferentes_comprados;
+	int produtos_diferentes_comprados_mes[N_MESES];
+	int compras_mes   [N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+	int quantidade_mes[N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+}*Cliente;
+
+typedef struct produto {
+	char *prod;
+
+	double faturacao;
+	int quantidade_anual;
+	int compras_mes   [N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+	int quantidade_mes[N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+	
+}*Produto;
+
+typedef struct produtogestao {
+	char *prod;
+
+	int     num_clientes;
+	double  faturacao_anual;
+	int     quantidade_anual;
+	double  faturacao [N_FILIAIS];
+	int     vendas   [N_FILIAIS];
+	Avl clientes[26];
+}*ProdutoGestao;
+
+
+/*Funções privadas*************************************************************/
+
+/*Critérios para libertar espaço alocado para elementos de um nodo da AVL*/
+
+
+void libertar_produtos (void*item, void*parametros){
+	Produto p = (Produto) item;
+
+	/*Não existe produto para eliminar*/
+	if (!p) return;
+
+	free(p->prod);
+	free(p);
+}
+
+void libertar_clientes(void*item, void*parametros){
+	int i;	
+	Cliente c = (Cliente) item;
+	
+	/*Não existe cliente para eliminar*/
+	if (!c) return;
+
+	for(i=0;i<26;i++)
+		avl_destroy(c->produtos[i], libertar_produtos);
+
+	free(c->cli);
+	
+	free(c);
+}
+
+void libertar_clientes_string(void*item, void*parametros){
+	if(item) free((char*)item);
+}
+
+void libertar_produtoGestao(void*item, void*parametros){
+	int i;	
+	ProdutoGestao pg = (ProdutoGestao) item;
+	
+	/*Não existe para eliminar*/
+	if (!pg) return;
+
+	for(i=0;i<26;i++)
+		avl_destroy(pg->clientes[i], libertar_clientes_string);
+
+	free(pg->prod);
+	
+	free(pg);
+}
+
+/*Critérios de comparação para os elementos nos nodos da AVL*/
+int comparacao_gestao_produto (const void*item1, const void*item2, void*parametros){
+	Produto p1 = (Produto) item1;
+	Produto p2 = (Produto) item2;
+	int *param;
+
+	if (!parametros) return (strcmp(p1->prod, p2->prod));
+
+	param = (int*)   parametros;
+
+
+	if (strcmp(p1->prod, p2->prod)==0) return 0;
+
+	if(*param==1) { /*Ordenar por quantidade anual*/
+
+		if (p1->quantidade_anual > p2->quantidade_anual) return -1;
+		if (p1->quantidade_anual < p2->quantidade_anual) return  1;
+	}
+
+	else { /*Ordenar por faturacao*/
+		if (p1->faturacao > p2->faturacao) return -1;
+		if (p1->faturacao < p2->faturacao) return  1;
+	}
+
+	return (strcmp(p1->prod, p2->prod));
+}
+
+/*Critérios de comparação para os elementos nos nodos da AVL*/
+int comparacao_gestao_produtoGestao (const void*item1, const void*item2, void*parametros){
+	ProdutoGestao p1 = (ProdutoGestao) item1;
+	ProdutoGestao p2 = (ProdutoGestao) item2;
+	int *param;
+
+	if (!parametros) return (strcmp(p1->prod, p2->prod));
+
+	param = (int*)   parametros;
+
+	if (strcmp(p1->prod, p2->prod)==0) return 0;
+
+	if(*param==1) { /*Ordenar por quantidade anual*/
+
+		if (p1->quantidade_anual > p2->quantidade_anual) return -1;
+		if (p1->quantidade_anual < p2->quantidade_anual) return  1;
+	}
+
+	if(*param==2) { /*Ordenar por faturacao anual*/
+		if (p1->faturacao_anual > p2->faturacao_anual) return -1;
+		if (p1->faturacao_anual < p2->faturacao_anual) return  1;
+	}
+
+	return (strcmp(p1->prod, p2->prod));
+}
+
+
+int comparacao_gestao_cliente_string (const void*item1, const void*item2, void*parametros){
+	return strcmp((char*)item1,(char*)item2);
+}
+
+
+int comparacao_gestao_cliente (const void*item1, const void*item2, void*parametros){
+	return strcmp(((Cliente)item1)->cli, ((Cliente)item2)->cli);
+}
+
+Produto init_produto_gestao (char* pr){
+	int i,j,k;	
+	Produto p = NULL;
+	p = (Produto) malloc(sizeof(struct produto));
+
+	p->prod = (char*) malloc((sizeof(char))*(strlen(pr)+1));
+	strcpy(p->prod, pr);
+
+	p->faturacao        = 0;
+	p->quantidade_anual = 0;
+
+	for(i=0;i<N_FILIAIS;i++){
+		for(j=0;j<N_MESES;j++){
+			for(k=0;k<N_REGIMES;k++){
+				p->quantidade_mes[i][j][k] = 0;
+				p->compras_mes   [i][j][k] = 0;
+			}
+		}
+	}
+
+	return p;
+}
+
+ProdutoGestao init_produtoGestao_gestao (char* pr){
+	int i;	
+	ProdutoGestao pg = NULL;
+
+	pg       = (ProdutoGestao) malloc(sizeof(struct produtogestao));
+	pg->prod = (char*) malloc((sizeof(char))*(strlen(pr)+1));
+	strcpy(pg->prod, pr);
+
+	pg->num_clientes=0;
+	
+	for(i=0;i<N_FILIAIS;i++){
+		pg->faturacao[i] = 0;
+		pg->vendas   [i] = 0;
+	}
+	pg->quantidade_anual = 0;
+	pg->faturacao_anual  = 0;
+
+	return pg;
+}
+
+
+Cliente init_cliente_gestao(char*cl){
+	int i,j,k;
+	Cliente c      = (Cliente) malloc(sizeof(struct cliente));
+	c->cli         = (char*) malloc((sizeof(char))*(strlen(cl)+1));
+	strcpy(c->cli, cl);
+
+	c->comprador_todas_filiais       = 0;
+	c->produtos_diferentes_comprados = 0;
+
+	for(i=0;i<N_FILIAIS;i++){
+		for(j=0;j<N_MESES;j++){
+			c->produtos_diferentes_comprados_mes[j] = 0;
+			for(k=0;k<N_REGIMES;k++){
+				c->quantidade_mes[i][j][k] = 0;
+				c->compras_mes   [i][j][k] = 0;
+			}
+		}
+	}
+	
+	return c;
+}
+
+
+Apresentacao preenche_apresentacao_gestao_compradores_todas_filiais (Travessia t, Apresentacao a) {
+	Cliente elemento;
+
+	while(1){
+		elemento = avl_t_next(t);
+
+		if (elemento==NULL) break;
+		
+		if ((elemento->comprador_todas_filiais)==1) 
+			a = recebe_elemento(elemento->cli,a,strlen(elemento->cli),SEM_ORDENACAO_INT,SEM_ORDENACAO_DOUBLE,SEM_ORDEM,0); 
+	}
+
+	return a;
+}
+
+Apresentacao preenche_apresentacao_clientes_produto (Travessia t, Apresentacao a){
+	char* elemento;
+
+	while(1){
+		elemento = avl_t_next(t);
+
+		if (elemento==NULL) break;
+		
+		a = recebe_elemento(elemento,a,strlen(elemento),SEM_ORDENACAO_INT,SEM_ORDENACAO_DOUBLE,SEM_ORDEM,0); 
+	}
+
+	return a;
+}
+
+Apresentacao preenche_apresentacao_top_cliente (Travessia t, Apresentacao a, int N) {
+	Produto elemento;
+	int  offset;
+	char s[BUFFER_PEQUENO];
+
+	while(1){
+		elemento = avl_t_next(t);
+
+		if (elemento==NULL) return a;
+
+		offset = sprintf(s,"%s faturou %.2f",elemento->prod, elemento->faturacao); 		 
+		a = recebe_elemento(s,a,offset,SEM_ORDENACAO_INT,elemento->faturacao,DESCENDENTE,N);
+	}
+
+	return a;
+}
+
+Apresentacao preenche_apresentacao_top_produtos (Travessia t, Apresentacao a, int N) {
+	ProdutoGestao elemento;
+	int j,v,offset;
+	char s[BUFFER_GRANDE];
+
+	while(1){
+		elemento = avl_t_next(t);
+
+		if (elemento==NULL) return a;
+		
+		for(j=0,v=0;j<N_FILIAIS;j++){
+			v += elemento->vendas[j];	 
+		}
+
+		offset = sprintf(s,"Produto %s, participa em %d vendas realizadas por %d clientes diferentes num total de %d unidades\n     |",elemento->prod, v, elemento->num_clientes,elemento->quantidade_anual);
+
+		for(j=0;j<N_FILIAIS;j++){
+			if(offset>=BUFFER_GRANDE){
+				printf("Buffer demasiado pequeno.\n");
+				return NULL;
+			}
+			offset += sprintf(s+offset," Filial %d: Faturou %.2f e Vendeu %d;", j+1, elemento->faturacao[j], elemento->vendas[j]); 		 
+		}	
+
+		offset += sprintf(s+offset,"\n     |");
+		recebe_elemento(s,a,offset,elemento->quantidade_anual,SEM_ORDENACAO_DOUBLE,DESCENDENTE,N); 
+	}
+
+	return a;
+}
+
+Apresentacao preenche_apresentacao_descendente (Travessia t, Apresentacao a, int mes, int maxAordenar) {
+	Produto elemento;
+	int i, j, offset, v;
+	char s[BUFFER_PEQUENO];
+
+	while(1){
+		elemento = avl_t_next(t);
+
+		if (elemento==NULL) break;
+
+		for(v=0, i=0;i<N_FILIAIS;i++){
+			for(j=0;j<N_REGIMES;j++){
+				v+=elemento->quantidade_mes[i][mes-1][j];	
+			}
+		}
+		
+		if (v>0){ /*Foi comprado no mes pretendido*/
+			offset = sprintf(s,"%s quantidade comprada %d\n     |",elemento->prod, v); 		 
+			a      = recebe_elemento(s,a,offset,v,SEM_ORDENACAO_DOUBLE,DESCENDENTE, maxAordenar);
+		}	
+	}
+
+	return a;
+}
+
+/******************************************************************************/
+
+
+
+
+
+/*Funções públicas*************************************************************/
+
+
+int num_elementos_gestao(Gestao g){
+	return g->elementos;
+}
+
+int num_clientes_gestao(Gestao g){
+	return g->num_clientes_compradores;
+}
+
+/*Incicalizacao do modulo gestao*/
+
+Gestao init_gestao(){
+	int i;
+	Gestao g = NULL;
+	g = (Gestao) malloc(sizeof(struct gestao));
+
+	g->elementos                     = 0;
+	g->prods                         = 0;
+	g->num_compradores_todas_filiais = 0;
+	g->num_clientes                  = 0;
+	g->num_clientes_compradores      = 0;
+
+	for(i=0;i<26;i++) {
+		g->clientes[i] = avl_create(comparacao_gestao_cliente,NULL,NULL); 
+		g->produtos[i] = avl_create(comparacao_gestao_produtoGestao,NULL,NULL); 
+	}
+
+	return g;
+}
+
+
+Gestao inserir_cliente_gestao(Gestao g, char*cod){
+	int i;
+	Cliente c;
+	
+	g->elementos++;
+	g->num_clientes++;
+	
+	c = init_cliente_gestao(cod);
+		
+	for(i=0;i<26;i++)
+		(c->produtos)[i] = avl_create(comparacao_gestao_produto,NULL,NULL); 
+	
+	avl_insert(g->clientes[(*cod)-'A'], c);
+	
+	return g;
+}
+
+Gestao inserir_produto_gestao(Gestao g, char*cod){
+	ProdutoGestao pg;
+	int i;
+
+	g->elementos++;
+	g->prods++;
+
+	pg = init_produtoGestao_gestao(cod);
+
+	for(i=0;i<26;i++)
+		(pg->clientes)[i] = avl_create(comparacao_gestao_cliente_string,NULL,NULL); 
+
+	avl_insert(g->produtos[*cod-'A'], pg);
+	
+	return g;
+}
+
+Gestao inserir_compra_gestao(Gestao g, char*cl, char*pr, int mes, int tipo, int filial, int quant, double preco){
+	int i, j, k, v;	
+	char *cod;	
+	Cliente procura        = NULL;
+	Produto procura2       = NULL;
+	ProdutoGestao procura3 = NULL;
+	Produto p              = NULL;
+	Cliente c              = NULL;	
+	ProdutoGestao pg       = NULL;
+
+	/*Atualizar ProdutoGestao************************************************/
+	procura3       = (ProdutoGestao) malloc(sizeof(struct produtogestao));
+	procura3->prod = pr; /*Não tem mal apenas igualar o apontador, pois esta variável será usada somente para efetuar uma procura e nunca para inserir a string para que se aponta, deste modo, seria redundante e menos eficiente alocar memória aqui.*/
+
+	pg = (ProdutoGestao) avl_find (g->produtos[*pr-'A'], procura3);	
+
+	pg->quantidade_anual    += quant;
+	pg->faturacao_anual     += quant*preco;
+	pg->faturacao[filial-1] += quant*preco;
+	pg->vendas   [filial-1]++;	
+	
+
+	if (((char*)avl_find (pg->clientes[*cl-'A'], cl))==NULL) {
+		pg->num_clientes++;
+		
+		cod = (char*) malloc ((sizeof(char))*(strlen(cl)+1));
+		strcpy(cod,cl);
+		
+		avl_insert(pg->clientes[cod[0]-'A'], cod);
+	}
+	
+	free(procura3);	
+	/**********************************************************************/
+	
+	/*Inserir Cliente*/
+	procura      = (Cliente) malloc(sizeof(struct cliente));
+	procura->cli = cl; /*Não tem mal apenas igualar o apontador, pois esta variável será usada somente para efetuar uma procura e nunca para inserir a string para que se aponta, deste modo, seria redundante e menos eficiente alocar memória aqui.*/
+
+	c = avl_find (g->clientes[(*cl)-'A'], procura);
+	free(procura);
+
+	/*Contador de Clientes que compraram em todas as filiais*/
+	if ((c->comprador_todas_filiais)==0){
+		for(i=0; i<N_FILIAIS; i++){
+			if (i==filial-1) continue;
+			for (v=0, j=0; j<N_MESES; j++){
+				for (k=0; k<N_REGIMES; k++){
+					v    += c->compras_mes[i][j][k];
+				}
+			}
+			if (v==0) break;
+		}
+		if (i==N_FILIAIS) {
+			g->num_compradores_todas_filiais++;
+			c->comprador_todas_filiais = 1;
+		}
+	}
+	/****************************************************/
+
+	/*Contador de clientes compradores*/
+	if (c->produtos_diferentes_comprados==0)
+		g->num_clientes_compradores++;
+	/*********************************/
+
+	c->quantidade_mes[filial-1][mes-1][tipo]+=quant;
+	c->compras_mes   [filial-1][mes-1][tipo]++;
+
+
+	/*Inserir Produto*/
+	procura2       = (Produto) malloc(sizeof(struct produto));
+	procura2->prod = pr; /*Não tem mal apenas igualar o apontador, pois esta variável será usada somente para efetuar uma procura e nunca para inserir a string para que se aponta, deste modo, seria redundante e menos eficiente alocar memória aqui.*/
+
+
+	p = avl_find (c->produtos[*pr-'A'], procura2);
+	free(procura2);
+
+	if (p==NULL) {
+		p = init_produto_gestao(pr);
+		p->faturacao        += quant*preco;
+		p->quantidade_anual += quant;
+		p->quantidade_mes[filial-1][mes-1][tipo]+=quant;
+		p->compras_mes   [filial-1][mes-1][tipo]++;
+		c->produtos_diferentes_comprados++;
+		c->produtos_diferentes_comprados_mes[mes-1]++;
+		avl_insert(c->produtos[*pr-'A'], p);
+		
+		return g;
+	}
+
+	p->faturacao        += quant*preco;
+	p->quantidade_anual += quant;
+	p->quantidade_mes[filial-1][mes-1][tipo]+=quant;
+	p->compras_mes   [filial-1][mes-1][tipo]++;
+	/*************/	
+
+	return g;
+}
+
+/*Libertar gestao*/
+void libertar_gestao(Gestao g){
+	int i;
+
+	/*Não existe gestao para eliminar*/
+	if (g==NULL) return;
+
+	for(i=0;i<26;i++){
+		avl_destroy(g->clientes[i], libertar_clientes);
+		avl_destroy(g->produtos[i], libertar_produtoGestao);
+	}
+
+	free(g);
+}
+/******************************************************************************/
+
+
+/****Queries*******************************************************************/
+
+/*
+ * Dado um código de cliente, criar uma tabela com o número total de produtos
+ * comprados (ou seja a soma das quantidades de todas as vendas do produto),
+ * mês a mês (para meses em que não comprou a entrada deverá ficar a 0). A
+ * tabela deverá ser apresentada em ecrã organizada por filial. 
+ */
+Capsula dados_cliente(Gestao g, char*cod){
+	int i,j,k,t;
+	Capsula  c       = NULL;
+	Cliente  cl      = NULL;
+	Cliente  procura = NULL;
+	
+	procura      = (Cliente) malloc(sizeof(struct cliente));
+	procura->cli = (char*)   malloc((sizeof(char))*(strlen(cod)+1));
+	strcpy(procura->cli, cod);
+
+	cl = (Cliente) avl_find((g->clientes)[*cod-'A'], procura);	
+	free(procura->cli);
+	free(procura);
+
+	if (!cl) return NULL; /*Cliente não existe*/
+
+	c = init_capsula (12*N_FILIAIS,0); /*Queremos encapsular 12*N_FILIAIS ints (12 meses por cada filial)*/
+
+	for (k=0;k<N_FILIAIS;k++){
+		for (i=0;i<N_MESES;i++){
+			for(t=0,j=0;j<N_REGIMES;j++){
+				t += cl->quantidade_mes[k][i][j];
+			}
+			insere_capsula(c, INT, &t, NULL);
+		}
+	}
+
+	return c;
+}
+
+
+/*
+ * Determinar a lista ordenada de códigos de clientes que realizaram compras em
+ * todas as filiais.
+ */ 
+Apresentacao compradores_todas_filiais(Gestao g){
+	Apresentacao a = NULL;
+	int i, ctf;
+	Travessia t = (Travessia) malloc(sizeof(struct avl_traverser));
+
+	ctf = g->num_compradores_todas_filiais;
+	if (ctf==0) return NULL;
+
+	a = init_apresentacao(ctf,0);
+
+	for (i=0;i<=25;i++){
+		avl_t_init (t, g->clientes[i]);
+		preenche_apresentacao_gestao_compradores_todas_filiais (t, a);
+	}
+
+	free(t);
+	return a;
+}
+
+
+/*
+ * Dado um código de cliente determinar quais os códigos dos N produtos em que
+ * mais gastou dinheiro durante o ano.
+ */
+Apresentacao top_cliente(Gestao g, char*cod, int N){
+	int i;
+	Apresentacao a   = NULL;
+	Cliente  cl      = NULL;
+	Cliente  procura = NULL;
+	Travessia t = (Travessia) malloc(sizeof(struct avl_traverser));
+	
+	procura      = (Cliente) malloc(sizeof(struct cliente));
+	procura->cli = (char*)   malloc((sizeof(char))*(strlen(cod)+1));
+	strcpy(procura->cli, cod);
+
+	cl = (Cliente) avl_find((g->clientes)[*cod-'A'], procura);	
+	free(procura->cli);
+	free(procura);
+
+	if (!cl) return NULL; /*Cliente não comprou*/
+
+	if(cl->produtos_diferentes_comprados < N) N = cl->produtos_diferentes_comprados;
+
+	a = init_apresentacao(cl->produtos_diferentes_comprados,2);
+
+	for(i=0;i<26;i++){
+		avl_t_init (t, cl->produtos[i]);
+		a = preenche_apresentacao_top_cliente (t, a, N);
+	}
+
+
+	free(t);
+	return a;
+}
+
+
+/*
+ * Criar uma lista dos N produtos mais vendidos em todo o ano, indicando o
+ * número total de clientes diferentes que os compraram e o número de unidades 
+ * vendidas, filial a filial. 
+ */
+Apresentacao top_produtos(Gestao g, int N){
+	int i;
+	Apresentacao a = NULL;
+	Travessia    t = (Travessia) malloc(sizeof(struct avl_traverser));
+
+	if (N>g->prods) N = g->prods;
+
+	a = init_apresentacao(g->prods,2);
+
+	for(i=0;i<26;i++){
+		avl_t_init (t, g->produtos[i]);
+		a = preenche_apresentacao_top_produtos (t, a, N);
+	}
+
+
+	free(t);
+	return a;
+}
+
+
+
+/*
+ * Dado um código de cliente e um mês, determinar a lista de códigos de
+ * produtos que mais comprou por quantidade e não por facturação), por ordem
+ * descendente.
+ */
+Apresentacao top_mes_descendente(Gestao g, char* cod, int mes){
+	int i;
+	Apresentacao a   = NULL;
+	Cliente  cl      = NULL;
+	Cliente  procura = NULL;
+	Travessia t = (Travessia) malloc(sizeof(struct avl_traverser));
+	
+	procura      = (Cliente) malloc(sizeof(struct cliente));
+	procura->cli = (char*)   malloc((sizeof(char))*(strlen(cod)+1));
+	strcpy(procura->cli, cod);
+
+	cl = (Cliente) avl_find((g->clientes)[*cod-'A'], procura);	
+	free(procura->cli);
+	free(procura);
+
+	if (!cl) return NULL; /*Cliente não comprou*/
+
+	a = init_apresentacao(cl->produtos_diferentes_comprados_mes[mes-1],2);
+
+	for(i=0;i<26;i++){
+		avl_t_init (t, cl->produtos[i]);
+		a = preenche_apresentacao_descendente (t, a, mes,cl->produtos_diferentes_comprados_mes[mes-1]);
+	}
+	
+	free(t);
+	return a;
+}
+
+
+Apresentacao clientes_produto(Gestao g, char* cod){
+	int i;
+	Apresentacao   a       = NULL;
+	ProdutoGestao  pg      = NULL;
+	ProdutoGestao  procura = NULL;
+	Travessia t            = NULL;
+
+	t = (Travessia) malloc(sizeof(struct avl_traverser));
+	
+	procura       = (ProdutoGestao) malloc(sizeof(struct produtogestao));
+	procura->prod = (char*)   malloc((sizeof(char))*(strlen(cod)+1));
+	strcpy(procura->prod, cod);
+
+	pg = (ProdutoGestao) avl_find(g->produtos[*cod-'A'], procura);	
+	free(procura->prod);
+	free(procura);
+
+	if (!pg) return NULL; /*Produto não existe*/
+
+	a = init_apresentacao(pg->num_clientes,0);
+
+	for(i=0;i<26;i++){
+		avl_t_init (t, pg->clientes[i]);
+		a = preenche_apresentacao_clientes_produto (t, a);
+	}	
+	
+	free(t);
+	return a;
+
+}
+/******************************************************************************/
+
+
+/*****Apresentacao*************************************************************/
+
+void elimina_apresentacao_gestao(Apresentacao a){
+	elimina_apresentacao(a);
+}
+
+char* apresenta_elemento_gestao(Apresentacao a, int pagina, int linha){
+	return pede_elemento(a,pagina,linha);
+}
+
+
+int get_paginas_gestao(Apresentacao a){
+	return get_paginas(a);
+}
+
+
+int get_elem_por_pagina_gestao(Apresentacao a){
+	return get_elem_por_pagina(a);
+}
+
+
+int get_elem_total_gestao(Apresentacao a){
+	return get_elem_total(a);
+}
+
+char** get_pagina_gestao(Apresentacao a, int pag){
+	return get_pag(a,pag);
+}
+
+/******************************************************************************/
+
+
+/*****Capsula******************************************************************/
+
+void libertar_capsula_gestao(Capsula c){
+	libertar_capsula(c);
+}
+
+int get_tipo_capsula_gestao(Capsula c){
+	return tipo_capsula(c);
+}
+
+int get_int_capsula_gestao(Capsula c, int indice){
+	return int_capsula(c,indice);
+}
+
+double get_double_capsula_gestao(Capsula c,int indice){
+	return double_capsula(c,indice);
+}
+
+int get_q1_capsula_gestao(Capsula c){
+	return q1_capsula(c);
+}
+
+int get_q2_capsula_gestao(Capsula c){
+	return q2_capsula(c);
+}
+
+/******************************************************************************/
+

@@ -1,0 +1,437 @@
+/*
+ * Facturação Global: módulo de dados que irá conter as estruturas de dados
+ * responsáveis pela resposta eficiente a questões quantitativas que relacionam
+ * os produtos às suas vendas mensais, em modo Normal (N) ou em Promoção
+ * (P), para cada um dos casos guardando o número de vendas e o valor total de
+ * facturação de cada um destes tipos. Este módulo deve referenciar todos os
+ * produtos, mesmo os que nunca foram vendidos.
+ * Este módulo não contém qualquer referência a clientes, mas deve ser capaz de
+ * distinguir os valores obtidos em cada filial; 
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "faturacao.h"
+
+#define OK 1 /*Situação de sucesso*/
+#define KO 0 /*Situação de insucesso*/
+
+
+struct faturacao {
+	int    elementos;
+	int    nao_comprados_global;
+	int    nao_comprados[N_FILIAIS];
+	int    total_quantidade_anual;
+	int    total_vendas_anual;
+	int    total_vendas_mes[N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+	double total_faturacao_anual;
+	int    total_quantidade_mes[N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/	
+	double total_faturacao_mes[N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+
+	Avl produtos[26];
+};
+
+
+typedef struct produto {
+	int    quantidade_anual;
+	int    vendas_anual;
+	double faturacao_anual;
+	int    quantidade_mes[N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+	int    vendas_mes   [N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+	double faturacao_mes[N_FILIAIS][N_MESES][N_REGIMES]; /*indice 0 modo N, indice 1 modo P*/
+
+	char *prod;
+
+}*Produto;
+
+
+
+/*Funções privadas*/
+
+
+
+Apresentacao preenche_apresentacao_faturacao_nao_comprados (Travessia t, Apresentacao a, int*filial) {
+	Produto elemento;	
+	int fil, i, j, v;
+
+	if(filial) fil=(*filial)-1;
+
+	while(1){
+		elemento = avl_t_next(t);
+
+		if (elemento==NULL) break;
+
+		else {
+			if(!filial){
+				if((elemento->vendas_anual)==0)
+					a = recebe_elemento(elemento->prod,a,strlen(elemento->prod),SEM_ORDENACAO_INT,SEM_ORDENACAO_DOUBLE,SEM_ORDEM,0); 
+			}
+			else {
+				v=0;
+				for(i=0;i<N_MESES;i++){
+					for(j=0;j<N_REGIMES;j++){
+						v+=elemento->vendas_mes[fil][i][j];
+					}
+				}
+				if (v==0)
+					a = recebe_elemento(elemento->prod,a,strlen(elemento->prod),SEM_ORDENACAO_INT,SEM_ORDENACAO_DOUBLE,SEM_ORDEM,0); 
+			}
+		}
+	}
+
+	return a;
+}
+
+/*Critérios para libertar espaço alocado para elementos de um nodo da AVL*/
+void libertar_avl_faturacao (void*item, void*parametros){
+	free(((Produto)item)->prod);
+	free(item);
+}
+
+/*Critérios de comparação para os elementos nos nodos da AVL*/
+int comparacao_faturacao (const void*item1, const void*item2, void*parametros){
+	return strcmp(((Produto)item1)->prod, ((Produto)item2)->prod);
+}
+
+
+Produto init_produto(char*cod){
+	int i,j,k;
+	Produto p;
+
+	p = (Produto) malloc(sizeof(struct produto));
+	p->vendas_anual     = 0;
+	p->faturacao_anual  = 0;
+	p->quantidade_anual = 0;
+
+	for(i=0;i<N_FILIAIS;i++){
+		for(j=0;j<N_MESES;j++){
+			for(k=0;k<N_REGIMES;k++){
+				(p->vendas_mes)    [i][j][k] = 0;
+				(p->faturacao_mes) [i][j][k] = 0;
+				(p->quantidade_mes)[i][j][k] = 0;
+			}
+		}
+	}
+
+	p->prod = (char*) malloc((sizeof(char))*((strlen(cod))+1));
+	strcpy(p->prod, cod);
+	
+	return p;
+}
+
+
+/*******************/
+
+
+
+
+/*Funções públicas*/
+
+int get_num_elementos(Faturacao f){
+	return f->elementos;
+}
+
+/*Incicalizacao do modulo faturacao*/
+Faturacao init_faturacao(){
+	int j, i, k;
+	Faturacao f;
+
+	f = (Faturacao) malloc(sizeof(struct faturacao));
+
+	f->elementos              = 0;
+	f->nao_comprados_global   = 0;
+	f->total_vendas_anual     = 0;
+	f->total_faturacao_anual  = 0;
+	f->total_quantidade_anual = 0;
+
+	for(i=0;i<N_FILIAIS;i++){
+		f->nao_comprados[i] = 0;
+		for(j=0;j<N_MESES;j++){
+			for(k=0;k<N_REGIMES;k++){
+				(f->total_vendas_mes    )[i][j][k] = 0;
+				(f->total_quantidade_mes)[i][j][k] = 0;
+				(f->total_faturacao_mes )[i][j][k] = 0;
+			}
+		}
+	}
+
+	for(i=0;i<26;i++)
+		(f->produtos)[i] = avl_create(comparacao_faturacao,NULL,NULL); 
+
+	return f;
+}
+
+
+
+Faturacao inserir_produto_faturacao(Faturacao f, char*cod){
+	int i;
+
+	f->elementos++;
+
+	for(i=0;i<N_FILIAIS;i++){
+		(f->nao_comprados[i])++;
+	}
+	(f->nao_comprados_global)++;
+
+	avl_insert((f->produtos)[(*cod)-'A'], init_produto(cod));
+
+	return f;
+}
+
+
+
+Faturacao inserir_compra_faturacao(Faturacao f, char *cod, int mes, int tipo, int filial, int quant, float preco){
+	Produto procura;
+	Produto p;
+	int v, i, j;
+
+	procura       = (Produto) malloc(sizeof(struct produto));
+	procura->prod = cod; /*Não tem mal apenas igualar o apontador, pois esta variável será usada somente para efetuar uma procura e nunca para inserir a string para que se aponta, deste modo, seria redundante e menos eficiente alocar memória aqui.*/
+	strcpy(procura->prod, cod); 
+
+	p = (Produto) avl_find((f->produtos)[(*cod)-'A'], procura);
+	free(procura);
+
+	mes--;
+	filial--;
+
+	/*Contador para saber quantos produtos nunca foram comprados*/
+	for (v=0,i=0; i<N_MESES;i++){
+		for(j=0;j<N_REGIMES;j++){
+			v+=p->vendas_mes[filial][i][j];
+		}
+	}
+	if(v==0) /*Comprado pela primeira vez nesta filial*/
+		(f->nao_comprados[filial])--;
+	if((p->vendas_anual)==0) /*Nunca antes comprado*/
+		(f->nao_comprados_global)--;
+	/************************************************************/
+
+	p->vendas_anual++;
+	p->quantidade_anual+=quant;
+	p->faturacao_anual+=preco*quant;
+	p->quantidade_mes[filial][mes][tipo]+=quant;
+	p->vendas_mes    [filial][mes][tipo]++;
+	p->faturacao_mes [filial][mes][tipo]+=preco*quant;
+	
+	(f->total_quantidade_anual)+=quant;
+	(f->total_vendas_anual)++;
+	(f->total_faturacao_anual)+=preco*quant;
+	(f->total_vendas_mes[filial][mes][tipo])++;
+	(f->total_quantidade_mes[filial][mes][tipo])+=quant;
+	(f->total_faturacao_mes[filial][mes][tipo])+=preco*quant;
+
+	return f;
+}
+
+
+/*Libertar faturacao*/
+void libertar_faturacao(Faturacao f){
+	int i;
+
+	/*Não existe faturacao para eliminar*/
+	if (f==NULL) return;
+
+	for(i=0;i<=25;i++)
+		avl_destroy(f->produtos[i], libertar_avl_faturacao);
+
+	free(f);
+}
+
+
+/*Queries*********************************************************************/
+
+/*
+ * Dado um mês e um código de produto, ambos válidos, determinar e apresentar
+ * o número total de vendas e o total facturado com esse produto em tal mês,
+ * distinguindo os totais em modo N e os totais em modo P. O utilizador deverá
+ * decidir se pretende o resultado global ou os valores totais filial a filial. 
+ */
+Capsula total_dados_produto(Faturacao f, int *filial, int mes, char* cod){
+	int k;
+	int numero_vendasP  = 0;
+	double   faturacaoP = 0;
+	int numero_vendasN  = 0;
+	double   faturacaoN = 0;
+	int quantidadeP     = 0;
+	int quantidadeN     = 0;
+	int fil;
+	
+	Capsula resposta;	
+
+	Produto procura = (Produto) malloc(sizeof(struct produto));
+	Produto p = NULL;
+
+	procura->prod = (char*) malloc((sizeof(char))*(strlen(cod)+1));
+	strcpy(procura->prod, cod); 
+	p = (Produto) avl_find((f->produtos)[*cod-'A'], procura);	
+	free(procura->prod);
+	free(procura);
+
+	if (!p) return NULL; /*produto não existe*/
+
+
+	if (!filial){
+		for(k=0;k<N_FILIAIS;k++){
+			numero_vendasN += p->vendas_mes    [k][mes-1][0];
+			faturacaoN     += p->faturacao_mes [k][mes-1][0];
+			quantidadeN    += p->quantidade_mes[k][mes-1][0];			
+
+			numero_vendasP += p->vendas_mes    [k][mes-1][1];
+			faturacaoP     += p->faturacao_mes [k][mes-1][1];
+			quantidadeP    += p->quantidade_mes[k][mes-1][1];
+		}
+	}				
+
+	
+	else {
+		fil = (*filial)-1;
+		numero_vendasN = p->vendas_mes    [fil][mes-1][0];
+		faturacaoN     = p->faturacao_mes [fil][mes-1][0];
+		quantidadeN    = p->quantidade_mes[fil][mes-1][0];
+
+		numero_vendasP = p->vendas_mes    [fil][mes-1][1];
+		faturacaoP     = p->faturacao_mes [fil][mes-1][1];
+		quantidadeP    = p->quantidade_mes[fil][mes-1][1];
+	}
+
+	resposta = init_capsula(4,2); /*Queremos encapsular quatro ints e dois doubles*/
+	resposta = insere_capsula(resposta, AMBOS, &quantidadeN  , &faturacaoN);
+	resposta = insere_capsula(resposta, AMBOS, &quantidadeP  , &faturacaoP);
+	resposta = insere_capsula(resposta, INT  , &numero_vendasN, NULL);
+	resposta = insere_capsula(resposta, INT  , &numero_vendasP, NULL);
+	
+	return resposta;
+}
+
+
+
+/* 
+ * Determinar a lista ordenada dos códigos dos produtos (e o seu número total),
+ * que ninguém comprou, podendo o utilizador decidir igualmente se pretende
+ * valores totais ou divididos pelas filiais. 
+ */
+Apresentacao nunca_comprados(Faturacao f, int *filial){
+	Apresentacao a = NULL;
+	int i, nc, fil;
+	Travessia t = (Travessia) malloc(sizeof(struct avl_traverser));
+
+	if (!filial){
+		nc = f->nao_comprados_global; 
+	}
+	else {
+		fil = (*filial)-1;
+		nc  = f->nao_comprados[fil];
+	}
+
+	a = init_apresentacao(nc,0);
+	for (i=0;i<=25;i++){
+		avl_t_init (t, f->produtos[i]);
+		a = preenche_apresentacao_faturacao_nao_comprados (t, a, filial);
+	}
+
+	free(t);
+
+	return a;
+}
+
+
+
+/*
+* Dado um intervalo fechado de meses, por exemplo [3..7], determinar o total de
+* vendas registadas nesse intervalo e o total facturado; 
+*/
+Capsula dados_globais_intervalo(Faturacao f, int mes1, int mes2){
+	int i, j, k;
+	int    vendas     = 0;
+	int    quantidade = 0;
+	double faturacao  = 0;
+	Capsula resposta   = NULL;
+
+	for(i=0;i<N_FILIAIS;i++){
+		for(j=mes1-1;j<mes2;j++){
+			for(k=0;k<N_REGIMES;k++){
+				quantidade += f->total_quantidade_mes[i][j][k];
+				faturacao  += f->total_faturacao_mes [i][j][k];
+				vendas     += f->total_vendas_mes    [i][j][k];
+			}
+		}
+	}
+
+	resposta = init_capsula(2,1); /*Queremos encapsular dois ints e um double*/
+	resposta = insere_capsula(resposta, AMBOS, &quantidade, &faturacao);
+	resposta = insere_capsula(resposta, INT  , &vendas    , NULL);
+	return resposta;
+}
+
+/*
+ * número de produtos que ninguém comprou.
+ */
+int get_num_nao_comprados_global(Faturacao f){
+	return f->nao_comprados_global;
+}
+
+/***************************************************************************/
+
+
+/*****Apresentacao*****/
+
+void elimina_apresentacao_faturacao(Apresentacao a){
+	elimina_apresentacao(a);
+}
+
+char* apresenta_elemento_faturacao(Apresentacao a, int pagina, int linha){
+	return pede_elemento(a,pagina,linha);
+}
+
+
+int get_paginas_faturacao(Apresentacao a){
+	return get_paginas(a);
+}
+
+
+int get_elem_por_pagina_faturacao(Apresentacao a){
+	return get_elem_por_pagina(a);
+}
+
+
+int get_elem_total_faturacao(Apresentacao a){
+	return get_elem_total(a);
+}
+
+char** get_pagina_faturacao(Apresentacao a, int pag){
+	return get_pag(a,pag);
+}
+
+/**********************/
+
+
+/*****Capsula*****/
+
+void libertar_capsula_faturacao(Capsula c){
+	libertar_capsula(c);
+}
+
+int get_tipo_capsula_faturacao(Capsula c){
+	return tipo_capsula(c);
+}
+
+int get_int_capsula_faturacao(Capsula c, int indice){
+	return int_capsula(c,indice);
+}
+
+double get_double_capsula_faturacao(Capsula c,int indice){
+	return double_capsula(c,indice);
+}
+
+int get_q1_capsula_faturacao(Capsula c){
+	return q1_capsula(c);
+}
+
+int get_q2_capsula_faturacao(Capsula c){
+	return q2_capsula(c);
+}
+
+/*****************/
+
